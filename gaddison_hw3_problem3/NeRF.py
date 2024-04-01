@@ -26,7 +26,7 @@ def load_colmap_data():
     """
     ################### YOUR CODE START ###################
     # Load the data from transform.json
-    with open('/home/griffin/Documents/ese6500/ese6500-hw3/gaddison_hw3_problem3/data/data/transforms.json') as f:
+    with open('/home/griffin/Documents/ese6500-hw3/gaddison_hw3_problem3/data/data/transforms.json') as f:
         data = json.load(f)
 
 
@@ -44,7 +44,7 @@ def load_colmap_data():
     # print("len(data['frames'])", len(data['frames']))
     for i in range(len(data['frames'])):
         # Read the image
-        image_path_prefix = "/home/griffin/Documents/ese6500/ese6500-hw3/gaddison_hw3_problem3/data/data/images/"
+        image_path_prefix = "/home/griffin/Documents/ese6500-hw3/gaddison_hw3_problem3/data/data/images/"
         # print(data['frames'][i]['file_path'][0])
         image_path = image_path_prefix + data['frames'][i]['file_path'][0]
         img = cv2.imread(image_path)
@@ -88,26 +88,45 @@ def get_rays(H, W, focal_length, pose):
         passing through the pixel at row index `i` and column index `j`.
     """
     ################### YOUR CODE START ###################
-   
-    ray_origins = torch.zeros((H, W, 3))
-    ray_directions = torch.zeros((H, W, 3))
-
-    K_inv = torch.linalg.inv(torch.tensor([[focal_length, 0, W/2],\
-                  [0, focal_length, H/2],\
-                  [0, 0, 1]]))
-    # For each pixel
-    for i in range(H):
-        for j in range(W):
-            # Calculate ray origin
-            ray_origins[i][j] = pose[:3, 3]
-
-            # Calculate ray direction
-            pixel_c = K_inv @ torch.tensor([j, i, 1], dtype=torch.float32)
-            ray_direction_w = pose[:3, :3] @ pixel_c
-            ray_directions[i][j] = ray_direction_w / torch.linalg.norm(ray_direction_w)
-
-
+       # Create meshgrid for pixel coordinates (H, W)
+    i, j = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
+    pixels = torch.stack([j, i, torch.ones_like(i)], dim=-1)  # Shape: (H, W, 3)
+    
+    # Calculate K inverse once since it's constant
+    K_inv = torch.linalg.inv(torch.tensor([[focal_length, 0, W / 2],
+                                           [0, focal_length, H / 2],
+                                           [0, 0, 1]], dtype=torch.float32))
+    
+    # Transform pixel coordinates to world coordinates
+    pixels_world = torch.einsum('ij,hwj->hwi', K_inv, pixels.float())
+    
+    # Calculate ray directions
+    ray_directions = torch.einsum('ij,hwj->hwi', pose[:3, :3], pixels_world)
+    ray_directions = ray_directions / torch.norm(ray_directions, dim=-1, keepdim=True)
+    
+    # Calculate ray origins
+    ray_origins = pose[:3, 3].expand(H, W, 3)  # The origin is the same for all rays
+    
     return ray_origins, ray_directions
+    # ray_origins = torch.zeros((H, W, 3))
+    # ray_directions = torch.zeros((H, W, 3))
+    #
+    # K_inv = torch.linalg.inv(torch.tensor([[focal_length, 0, W/2],\
+    #               [0, focal_length, H/2],\
+    #               [0, 0, 1]]))
+    # # For each pixel
+    # for i in range(H):
+    #     for j in range(W):
+    #         # Calculate ray origin
+    #         ray_origins[i][j] = pose[:3, 3]
+    #
+    #         # Calculate ray direction
+    #         pixel_c = K_inv @ torch.tensor([j, i, 1], dtype=torch.float32)
+    #         ray_direction_w = pose[:3, :3] @ pixel_c
+    #         ray_directions[i][j] = ray_direction_w / torch.linalg.norm(ray_direction_w)
+    #
+    #
+    # return ray_origins, ray_directions
     ################### YOUR CODE END ###################
 
 
@@ -183,24 +202,44 @@ def positional_encoding(pos_in, max_freq_power=10, include_input=True):
                (H*W*num_samples, (include_input + 2*freq) * 3)
     """
     ################### YOUR CODE START ###################
+    frequencies = 2 ** torch.arange(max_freq_power + 1)
+    sin_encodings = []
+    cos_encodings = []
 
-    num_points = pos_in.shape[0]
-    pos_out = torch.tensor([])
-    frequencies = [2**i for i in range(max_freq_power+1)]
+    # Using broadcasting to apply sine and cosine functions to all frequencies and dimensions at once
+    for dim in range(3):  # Assuming pos_in is [N, 3]
+        # Expand dimension for broadcasting: [N, 1] to [N, 1, 1] and frequencies to [1, 1, F]
+        dim_freqs = (pos_in[:, dim:dim+1].unsqueeze(-1) * frequencies.to(pos_in.device).float()).numpy() * np.pi
+        sin_encodings.append(torch.sin(torch.tensor(dim_freqs)))
+        cos_encodings.append(torch.cos(torch.tensor(dim_freqs)))
 
+    # Concatenate all sine and cosine encodings along the last dimension, then reshape to [N, F*3*2]
+    sin_encodings = torch.cat(sin_encodings, dim=2).view(pos_in.shape[0], -1)
+    cos_encodings = torch.cat(cos_encodings, dim=2).view(pos_in.shape[0], -1)
+    encoded = torch.cat([sin_encodings, cos_encodings], dim=1)
+
+    # Include the input if specified
     if include_input:
-        pos_out = pos_in
+        encoded = torch.cat([pos_in, encoded], dim=1)
+
+    return encoded
+#num_points = pos_in.shape[0]
+    #pos_out = torch.tensor([])
+    #frequencies = [2**i for i in range(max_freq_power+1)]
+
+    #if include_input:
+    #    pos_out = pos_in
     # print("pos_out.shape: ", pos_out.shape)
     # For each frequency, each of xyz, each of sin and cos, append this col to pos_out
-    for freq in frequencies:
-        for dim in range(3):
+    #for freq in frequencies:
+        #    for dim in range(3):
             # print("pos_out.shape: ", pos_out.shape)
-            pos_out = torch.cat([pos_out, torch.sin(freq * np.pi * pos_in[:, dim]).unsqueeze(1)], dim=1)
-            pos_out = torch.cat([pos_out, torch.cos(freq * np.pi * pos_in[:, dim]).unsqueeze(1)], dim=1) # dim:dim+1 = .reshape(-1, 1) = .unsqueeze(1)
+    #        pos_out = torch.cat([pos_out, torch.sin(freq * np.pi * pos_in[:, dim]).unsqueeze(1)], dim=1)
+    #        pos_out = torch.cat([pos_out, torch.cos(freq * np.pi * pos_in[:, dim]).unsqueeze(1)], dim=1) # dim:dim+1 = .reshape(-1, 1) = .unsqueeze(1)
 
     # print("pos_out.shape should be (H*W*num_samples, (include_input + 2*freq) * 3):", pos_out.shape)
 
-    return pos_out
+    #return pos_out
 
 
     
@@ -455,8 +494,9 @@ def train(images, poses, hwf, near_point,
 
 if __name__ == "__main__":
     # TODO
-
-
+    #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #print("device: ", device)
+    #torch.set_default_device('cuda')
     # Load the data from transform.json
     print("load_colmap_data start")
     imgs, poses, cam_params = load_colmap_data()
@@ -477,6 +517,7 @@ if __name__ == "__main__":
     # Initialize model
     print("Initialize model start")
     model = TinyNeRF(pos_dim=69, fc_dim=32)
+    #model = model.to(device)
     print("Initialize model end")
 
     # Train the model
@@ -486,11 +527,11 @@ if __name__ == "__main__":
     print("Train the model end")
 
     # Save the model 
-    torch.save(model.state_dict(), '/home/griffin/Documents/ese6500/ese6500-hw3/gaddison_hw3_problem3/')
+    torch.save(model.state_dict(), '/home/griffin/Documents/ese6500-hw3/gaddison_hw3_problem3/model.pt')
 
     # Load the model
     # model = TinyNeRF(pos_dim=3 * (1 + 2**10))
-    model.load_state_dit(torch.load('/home/griffin/Documents/ese6500/ese6500-hw3/gaddison_hw3_problem3/'))
+    model.load_state_dict(torch.load('/home/griffin/Documents/ese6500-hw3/gaddison_hw3_problem3/model.pt'))
 
     # Test the model
     test_idx = 0
