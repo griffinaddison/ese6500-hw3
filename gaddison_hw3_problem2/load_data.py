@@ -12,7 +12,7 @@ def load_lidar_data(fn):
         t = {}
         t['t'] = m[0][0][0][0][0]               # Unix time in seconds
         nn = len(m[0][0])
-        if (nn != 5) and (n != 6):
+        if (nn != 5) and (nn != 6):
             raise ValueError('Corrupted lidar data')
 
         # +x axis points forwards, +y points left, +z points upwards
