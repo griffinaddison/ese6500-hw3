@@ -202,27 +202,44 @@ def positional_encoding(pos_in, max_freq_power=10, include_input=True):
                (H*W*num_samples, (include_input + 2*freq) * 3)
     """
     ################### YOUR CODE START ###################
-    frequencies = 2 ** torch.arange(max_freq_power + 1)
+    frequencies = 2 ** torch.arange(max_freq_power + 1).to(pos_in.device, pos_in.dtype)
     sin_encodings = []
     cos_encodings = []
 
-    # Using broadcasting to apply sine and cosine functions to all frequencies and dimensions at once
-    for dim in range(3):  # Assuming pos_in is [N, 3]
-        # Expand dimension for broadcasting: [N, 1] to [N, 1, 1] and frequencies to [1, 1, F]
-        dim_freqs = (pos_in[:, dim:dim+1].unsqueeze(-1) * frequencies.to(pos_in.device).float()).numpy() * np.pi
-        sin_encodings.append(torch.sin(torch.tensor(dim_freqs)))
-        cos_encodings.append(torch.cos(torch.tensor(dim_freqs)))
+    for dim in range(3):
+        dim_freqs = pos_in[:, dim:dim+1] * frequencies * torch.pi
+        sin_encodings.append(torch.sin(dim_freqs))
+        cos_encodings.append(torch.cos(dim_freqs))
 
-    # Concatenate all sine and cosine encodings along the last dimension, then reshape to [N, F*3*2]
-    sin_encodings = torch.cat(sin_encodings, dim=2).view(pos_in.shape[0], -1)
-    cos_encodings = torch.cat(cos_encodings, dim=2).view(pos_in.shape[0], -1)
-    encoded = torch.cat([sin_encodings, cos_encodings], dim=1)
+    sin_encodings = torch.cat(sin_encodings, dim=-1)
+    cos_encodings = torch.cat(cos_encodings, dim=-1)
+    encoded = torch.cat([sin_encodings, cos_encodings], dim=-1)
 
-    # Include the input if specified
     if include_input:
-        encoded = torch.cat([pos_in, encoded], dim=1)
+        encoded = torch.cat([pos_in, encoded], dim=-1)
 
     return encoded
+    # frequencies = 2 ** torch.arange(max_freq_power + 1)
+    # sin_encodings = []
+    # cos_encodings = []
+    #
+    # # Using broadcasting to apply sine and cosine functions to all frequencies and dimensions at once
+    # for dim in range(3):  # Assuming pos_in is [N, 3]
+    #     # Expand dimension for broadcasting: [N, 1] to [N, 1, 1] and frequencies to [1, 1, F]
+    #     dim_freqs = (pos_in[:, dim:dim+1].unsqueeze(-1) * frequencies.to(pos_in.device).float()).numpy() * np.pi
+    #     sin_encodings.append(torch.sin(torch.tensor(dim_freqs)))
+    #     cos_encodings.append(torch.cos(torch.tensor(dim_freqs)))
+    #
+    # # Concatenate all sine and cosine encodings along the last dimension, then reshape to [N, F*3*2]
+    # sin_encodings = torch.cat(sin_encodings, dim=2).view(pos_in.shape[0], -1)
+    # cos_encodings = torch.cat(cos_encodings, dim=2).view(pos_in.shape[0], -1)
+    # encoded = torch.cat([sin_encodings, cos_encodings], dim=1)
+    #
+    # # Include the input if specified
+    # if include_input:
+    #     encoded = torch.cat([pos_in, encoded], dim=1)
+    #
+    # return encoded
 #num_points = pos_in.shape[0]
     #pos_out = torch.tensor([])
     #frequencies = [2**i for i in range(max_freq_power+1)]
@@ -297,8 +314,8 @@ def volume_rendering(
     # print("deltas.shape", deltas.shape, "deltas[..., -1].unsqueeze(2).shape", deltas[..., -1].unsqueeze(2).shape)
     deltas = torch.cat([deltas, deltas[..., -1].unsqueeze(2)], dim=-1)
 
-    densities = radiance_field[..., 0]
-    colors = radiance_field[..., 1:4]
+    densities = radiance_field[..., 3]
+    colors = radiance_field[..., 0:3]
 
     opacities = 1 - torch.exp(-densities * deltas)
 
@@ -428,8 +445,8 @@ def nerf_step_forward(height, width, focal_length, trans_matrix,
 
     ################### YOUR CODE START ###################
     # TODO: Perform differentiable volume rendering to re-synthesize the RGB image. # (H, W, 3)
-    print("radiance_field_flattened.view")
-    radiance_field = radiance_field_flattened.view(height, width, num_depth_samples_per_ray, 4)
+    # print("radiance_field_flattened.view")
+    # radiance_field = radiance_field_flattened.view(height, width, num_depth_samples_per_ray, 4)
     
     print("volume rendering")
     rgb_predicted = volume_rendering(radiance_field, ray_origins, depth_values)
@@ -468,8 +485,10 @@ def train(images, poses, hwf, near_point,
     seed = 9458
     torch.manual_seed(seed)
     np.random.seed(seed)
+    plt.figure()
 
-    for _ in tqdm(range(num_iters)):
+    for i in tqdm(range(num_iters)):
+      print("i", i)
       # Randomly pick a training image as the target, get rgb value and camera pose
       train_idx = np.random.randint(n_train)
       train_img_rgb = images[train_idx, ..., :3]
@@ -483,8 +502,14 @@ def train(images, poses, hwf, near_point,
                                               get_minibatches, model)
       print("train: nerf_step_forward end")
 
+      if i % 50 == 0:
+        plt.imshow(rgb_predicted.detach().numpy())
+        plt.show()
+
+    
       # Compute mean-squared error between the predicted and target images
       loss = torch.nn.functional.mse_loss(rgb_predicted, train_img_rgb)
+      print("loss", loss)
       loss.backward()
       optimizer.step()
       optimizer.zero_grad()
@@ -508,9 +533,10 @@ if __name__ == "__main__":
     focal_length = cam_params[2]
 
     # Set near and far clip planes
-    near_point = 0.1
-    far_point = 5.0
-
+    # near_point = 0.1
+    near_point = 2.0 
+    far_point = 5.0 
+        
     # Set number of depth samples per ray
     num_depth_samples_per_ray = 32 
 
@@ -519,29 +545,34 @@ if __name__ == "__main__":
     model = TinyNeRF(pos_dim=69, fc_dim=32)
     #model = model.to(device)
     print("Initialize model end")
-
+    #
     # Train the model
     print("Train the model start")
     print("imgs.type(): ", imgs.type(), "poses.type(): ", poses.type(), "type(cam_params): ", type(cam_params))
     train(imgs, poses, cam_params, near_point, far_point, num_depth_samples_per_ray, 1000, model)
     print("Train the model end")
-
-    # Save the model 
+    #
+    # # Save the model 
     torch.save(model.state_dict(), '/home/griffin/Documents/ese6500-hw3/gaddison_hw3_problem3/model.pt')
 
     # Load the model
-    # model = TinyNeRF(pos_dim=3 * (1 + 2**10))
+    # model = TinyNeRF(pos_dim=69, fc_dim=32)
     model.load_state_dict(torch.load('/home/griffin/Documents/ese6500-hw3/gaddison_hw3_problem3/model.pt'))
 
     # Test the model
-    test_idx = 0
+    test_idx = 80       
     test_img_rgb = imgs[test_idx, ..., :3]
     test_pose = poses[test_idx]
     print("nerf_step_forward start")
     rgb_predicted = nerf_step_forward(H, W, focal_length, test_pose, near_point, far_point, num_depth_samples_per_ray, get_minibatches, model)
     print("nerf_step_forward end")
-    plt.imshow(rgb_predicted)
-    plt.show()
+    print("rgb_predicted.shape", rgb_predicted.shape)
+    print("rgb_predicted[:5, :5]", rgb_predicted[:5, :5])
+    plt.figure(1)
+    print("torch.max", torch.max(rgb_predicted))
+    plt.imshow(rgb_predicted.detach())
+    # plt.show()
+    plt.figure(2)   
     plt.imshow(test_img_rgb)
     plt.show()
     print('done')
