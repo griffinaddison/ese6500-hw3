@@ -163,14 +163,37 @@ class slam_t:
             return np.zeros(3)
 
         #### TODO: XXXXXXXXXXX
-        raise NotImplementedError
+
+        # TODO: check that i am using the correct data
+        control = smart_minus_2d(s.lidar[t]['xyth'], s.lidar[t-1]['xyth'])
+
+        return control
+
 
     def dynamics_step(s, t):
         """"
         Compute the control using get_control and perform that control on each particle to get the updated locations of the particles in the particle filter, remember to add noise using the smart_plus_2d function to each particle
         """
         #### TODO: XXXXXXXXXXX
-        raise NotImplementedError
+
+        # Overview: dynamics is just the control, plus noise
+      
+        # for each particle
+        for i in range(s.n):
+            control = s.get_control(t)
+            # create noise (normal, mean 0, var Q, for xyz for each particle)
+            mean = np.zeros(3)
+            noise = np.random.multivariate_normal(mean, s.Q)
+            print("noise.shape: ", noise.shape)
+            print("control.shape: ", control.shape)
+            # compose control and noise
+            dynamics = control + noise
+
+            # transform each particle with dynamics
+            print("particles before dynamics: ", s.p[:, i])
+            s.p[:, i] = smart_plus_2d(s.p[:, i], dynamics)
+            print("particles after dynamics: ", s.p[:, i])
+
 
     @staticmethod
     def update_weights(w, obs_logp):
