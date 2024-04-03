@@ -52,15 +52,19 @@ class map_t:
         """
         #### TODO: XXXXXXXXXXX
         
-        # clip to within map bounds
-        x = np.clip(x, s.xmin, s.xmax)
-        y = np.clip(y, s.ymin, s.ymax)
-
-        # convert to cell indices
-        x = np.floor((x - s.xmin) / s.resolution).astype(int) # maybe round instead of floor
-        y = np.floor((y - s.ymin) / s.resolution).astype(int)
-
-        return np.array([x, y])
+        # # clip to within map bounds
+        # x = np.clip(x, s.xmin, s.xmax)
+        # y = np.clip(y, s.ymin, s.ymax)
+        #
+        # # convert to cell indices
+        # x = np.floor((x - s.xmin) / s.resolution).astype(int) # maybe round instead of floor
+        # y = np.floor((y - s.ymin) / s.resolution).astype(int)
+        #
+        # return np.array([x, y])
+        rows = np.clip((x - s.xmin)// s.resolution, 0, s.szx-1)
+        cols = np.clip((y - s.ymin) // s.resolution, 0, s.szy-1)
+        
+        return np.vstack((rows,cols))
 
 
 class slam_t:
@@ -75,7 +79,8 @@ class slam_t:
         s.init_sensor_model()
 
         # dynamics noise for the state (x,y,yaw)
-        s.Q = 1e-8*np.eye(3)
+        # s.Q = 1e-8*np.eye(3)
+        s.Q = Q
 
         # we resample particles if the effective number of particles
         # falls below s.resampling_threshold*num_particles
@@ -192,72 +197,29 @@ class slam_t:
 
         # make sure each distance >= dmin and <= dmax, otherwise something is wrong in reading
         # the data
-        # r2w_start_time = time.time()
-        d = np.clip(d, s.lidar_dmin, s.lidar_dmax)
-
+        # d = np.clip(d, s.lidar_dmin, s.lidar_dmax)
+        d = d[np.where((d >= s.lidar_dmin) & (d <= s.lidar_dmax))]
+        angles = angles[np.where((d >= s.lidar_dmin) & (d <= s.lidar_dmax))]
+        # print("d.shape", d.shape)
         # 1. from lidar distances to points in the LiDAR frame
-        # r2w_loop_start_time = time.time()
-        # P_lidar = np.zeros((4, len(d)))
-        # P_lidar[3, :] = 1 # homogenous coordinate 
-        # for i in range(len(d)):
-        #     P_lidar[0, i] = d[i] * np.cos(angles[i])
-        #     P_lidar[1, i] = d[i] * np.sin(angles[i])
-
-        # That was the slow way, heres the fast way
         P_lidar = np.vstack((d * np.cos(angles), \
                              d * np.sin(angles), \
                              np.zeros(len(d)), \
                              np.ones(len(d))))
-            
 
-
-
-        # print("r2w loop time", time.time() - r2w_loop_start_time)
         # 2. from LiDAR frame to the body frame
-        # P_body = np.zeros((3, len(d)))
-        # P_body = np.vstack((P_body, np.ones(len(d))))
         body_T_lidar = euler_to_se3(0, head_angle, neck_angle, np.array([0, 0, s.lidar_height])) # order of frames might be wrong naming-wise
-        # for i in range(len(d)):
-        #     P_body = body_T_lidar * P_lidar
         P_body = body_T_lidar @ P_lidar
 
         # 3. from body frame to world frame
-        # P_world = np.zeros((3, len(d)))
-        # P_world = np.vstack((P_world, np.ones(len(d))))
         x, y, yaw = p
+        # print("p: ", p)
+        # print("x, y, yaw: ", x, y, yaw)
         world_T_body = euler_to_se3(0, 0, yaw, np.array([x, y, s.head_height]))
-        # for i in range(len(d)):
-        #     P_world = world_T_body * P_body
         P_world = world_T_body @ P_body
 
         return P_world
-        #     
-        # idx = np.where((d >= s.lidar_dmin) & (d <= s.lidar_dmax))
-        # d = d[idx]
-        # # 1. from lidar distances to points in the LiDAR frame
-        # x_point = np.cos(s.lidar_angles[idx]) * d
-        # y_point = np.sin(s.lidar_angles[idx]) * d
-        # z_point = s.lidar_height * np.ones(x_point.shape)
-        #
-        # # 2. from LiDAR frame to the body frame
-        # points_lidar = np.vstack((x_point, y_point, np.zeros(x_point.shape), np.ones(x_point.shape)))
-        # h_lidar_aboveHead = s.lidar_height # 0.15
-        # # height of head above the ground
-        # h_head = 1.263
-        # T_lidar_body = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,h_head],[0,0,0,1]])
-        #
-        # # 3. from body frame to world frame
-        # x = p[0]   
-        # y = p[1]
-        # z = s.head_height # 1.263 # height of head (body frame) above the ground (world frame)
-        # yaw = p[2]
-        #
-        # T_headGround = np.array([[1, 0, 0, x], [0, 1, 0, y], [0, 0, 1, z], [0, 0, 0, 1]])
-        # lidar_to_body = euler_to_se3(0,head_angle, neck_angle, T_lidar_body[:3,-1])
-        # body_to_world = euler_to_se3(0,0, yaw, T_headGround[:3,-1])
-        # world = body_to_world @ lidar_to_body @ points_lidar
-        #
-        # return world[:2, :]
+
 
     def get_control(s, t):
         """
@@ -287,8 +249,8 @@ class slam_t:
         # Overview: dynamics is just the control, plus noise
       
         # for each particle
+        control = s.get_control(t)
         for i in range(s.n):
-            control = s.get_control(t)
             # create noise (normal, mean 0, var Q, for xyz for each particle)
             mean = np.zeros(3)
             noise = np.random.multivariate_normal(mean, s.Q)
@@ -321,6 +283,59 @@ class slam_t:
         # return w
         return np.exp(np.log(w) + obs_logp - slam_t.log_sum_exp(np.log(w) + obs_logp))
 
+    def bresenham_line(s, start, end):
+        """Bresenham's Line Algorithm
+        Produces a list of tuples from start and end
+
+        :param start: (x0, y0) starting position
+        :param end: (x1, y1) ending position
+        :returns: List of tuples where each tuple is a cell coordinate on the line
+        """
+        # Setup initial conditions
+        x0, y0 = start
+        x1, y1 = end
+        dx = x1 - x0
+        dy = y1 - y0
+
+        # Determine how steep the line is
+        is_steep = abs(dy) > abs(dx)
+
+        # Rotate line
+        if is_steep:
+            x0, y0 = y0, x0
+            x1, y1 = y1, x1
+
+        # Swap start and end points if necessary and store swap state
+        swapped = False
+        if x0 > x1:
+            x0, x1 = x1, x0
+            y0, y1 = y1, y0
+            swapped = True
+
+        # Recalculate differentials
+        dx = x1 - x0
+        dy = y1 - y0
+
+        # Calculate error
+        error = int(dx / 2.0)
+        ystep = 1 if y0 < y1 else -1
+
+        # Iterate over bounding box generating points between start and end
+        y = y0
+        points = []
+        for x in range(x0, x1 + 1):
+            coord = (y, x) if is_steep else (x, y)
+            points.append(coord)
+            error -= abs(dy)
+            if error < 0:
+                y += ystep
+                error += dx
+
+        # Reverse the list if the coordinates were swapped
+        if swapped:
+            points.reverse()
+        return points
+
     def observation_step(s, t):
         """
         This function does the following things
@@ -343,8 +358,8 @@ class slam_t:
         # print("s.joint['head_angles'].shape", s.joint['head_angles'].shape)
         t_idx = s.find_joint_t_idx_from_lidar(s.lidar[t]['t'])
         # neck, head = s.joint['head_angles'][:, t_idx]
-        head = s.joint['head_angles'][0, t_idx]
-        neck = s.joint['head_angles'][1, t_idx]
+        neck = s.joint['head_angles'][0][t_idx]
+        head = s.joint['head_angles'][1][t_idx]
 
         # 1. b. Project lidar scan into world frame
         scan = s.lidar[t]['scan'] # I assume this is the depths of the lidar scans
@@ -354,6 +369,7 @@ class slam_t:
         # print("observation particles loop: start")
         # obs_loop_start_time = time.time()
         # print("s.n: ", s.n)
+        occ_grid_per_particle = np.zeros((s.n, s.map.szx, s.map.szy))
         pose = s.p.T
         for i in range(s.n):
 
@@ -366,9 +382,14 @@ class slam_t:
             lidar_hits_cellIdx = s.map.grid_cell_from_xy(lidar_hits_W[0], lidar_hits_W[1]).astype(int)
             # lidar_hits_cellIdx_time = time.time()
 
+            occ_grid_per_particle[i, lidar_hits_cellIdx[0], lidar_hits_cellIdx[1]] = 1
+            # if i % 25 == 0:
+            #     plt.figure()
+            #     plt.imshow(occ_grid_per_particle[i], cmap='binary')
+            #     plt.show()
             # 1. c. Calculate which cells are obstacles according to this particle
             # Every time we hit a cell already in the map, increase log odds of this particle
-            obs_logodds[i] += s.map.cells[lidar_hits_cellIdx[0], lidar_hits_cellIdx[1]].sum() 
+            obs_logodds[i] = s.map.cells[lidar_hits_cellIdx[0], lidar_hits_cellIdx[1]].sum() 
             # obs_logodds_time = time.time()
             # obs_cells[i, cell_indices_all[0], cell_indices_all[1]] = 1
             # for lidar_point in lidar_points:
@@ -387,12 +408,60 @@ class slam_t:
         # print("s.w after: ", s.w)
 
         # 3. Find particle with largest weight, use its occupied cells to update map.log_odds and map.cells
-        max_weight_idx = np.argmax(s.w)
-        most_likely_particle = s.p[:, max_weight_idx]
-        most_likely_particle_world = s.rays2world(most_likely_particle.T, scan, head, neck, s.lidar_angles)
-        mlp_idx = s.map.grid_cell_from_xy(most_likely_particle_world[0], most_likely_particle_world[1]).astype(int)
-        s.map.log_odds += s.lidar_log_odds_free
-        s.map.log_odds[mlp_idx[0], mlp_idx[1]] -= s.lidar_log_odds_free - s.lidar_log_odds_occ 
+        # most_likely_particle = s.p[:, np.argmax(s.w)]
+        # mlp_lidar_hits = s.rays2world(most_likely_particle.T, scan, head, neck, s.lidar_angles)
+        # mlp_lidar_hits_cellIdx = s.map.grid_cell_from_xy(mlp_lidar_hits[0], mlp_lidar_hits[1]).astype(int)
+        # s.map.log_odds += s.lidar_log_odds_free
+        # s.map.log_odds[mlp_lidar_hits_cellIdx[0], mlp_lidar_hits_cellIdx[1]] -= s.lidar_log_odds_free 
+        # s.map.log_odds[mlp_lidar_hits_cellIdx[0], mlp_lidar_hits_cellIdx[1]] += s.lidar_log_odds_occ 
+        
+        most_likely_occ_grid = occ_grid_per_particle[np.argmax(s.w)]
+        # plt.figure()
+        # plt.imshow(most_likely_occ_grid, cmap='binary')
+        # plt.title("most likely occ grid")
+        # plt.show()
+           
+        s.map.num_obs_per_cell += most_likely_occ_grid.astype(np.uint64)
+
+        if t % 1000 == 0:
+            plt.figure()
+            plt.imshow(s.map.log_odds, cmap='binary')
+            plt.title('log odds before')
+            plt.show()
+        s.map.log_odds += s.lidar_log_odds_occ * most_likely_occ_grid
+
+        if t % 1000 == 0:
+            plt.figure()
+            plt.imshow(s.map.log_odds, cmap='binary')
+            plt.title('log odds after occ')
+            plt.show()
+
+        # For each particle in path of hit, decrease log odds
+        # for i in range(s.n):
+        #     free_cells = s.bresenham_line((s.p[0, i].astype(int), s.p[1, i].astype(int)), (lidar_hits_cellIdx[0][i].astype(int), lidar_hits_cellIdx[1][i].astype(int)))
+        #     s.map.log_odds[free_cells] += s.lidar_log_odds_free
+        if t % 1000 == 0:
+            plt.figure()
+            plt.imshow(s.map.log_odds, cmap='binary')
+            plt.title('log odds after free')
+            plt.show()
+
+
+
+
+# Now decide whether to update log odds for free space based on the observation count
+# Only decrease log odds for cells that have been observed more than a certain number of times
+        # obs_threshold = 5  # Set this based on your typical scan density
+        # mask = (s.map.num_obs_per_cell >= obs_threshold) & (most_likely_occ_grid == 0)
+
+        # s.map.log_odds += s.lidar_log_odds_free * (1 - most_likely_occ_grid)
+        # s.map.log_odds[mask] -= s.lidar_log_odds_free
+
+        # if t % 1000 == 0:
+        #     plt.figure()
+        #     plt.imshow(s.map.log_odds, cmap='binary')
+        #     plt.title('log odds after free')
+        #     plt.show()
         # s.map.log_odds += s.lidar_log_odds_occ * obs_cells[max_weight_idx] 
         # s.map.log_odds -= s.lidar_log_odds_free * (1- obs_cells[max_weight_idx])
         s.map.log_odds = np.clip(s.map.log_odds, -s.map.log_odds_max, s.map.log_odds_max)
@@ -400,7 +469,13 @@ class slam_t:
         # print("s.map.log_odds_thresh: ", s.map.log_odds_thresh)
         # print("s.map.cells: ", s.map.cells)
         s.map.cells = np.zeros(s.map.cells.shape)
-        s.map.cells = np.where(s.map.log_odds > s.map.log_odds_thresh, 1, 0)
+        # s.map.cells = np.where(s.map.log_odds > s.map.log_odds_thresh, 1, 0)
+        s.map.cells[s.map.log_odds >= s.map.log_odds_thresh] = 1
+        # plt.figure()
+        # plt.imshow(s.map.cells, cmap='binary')
+        # plt.title("map cells")
+        # plt.show()
+
         # print("s.map.cells: ", s.map.cells)
         # obs_post_loop_end_time = time.time()
         # obs_end_time = time.time()
