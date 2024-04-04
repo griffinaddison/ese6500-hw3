@@ -112,7 +112,7 @@ def run_slam(src_dir, log_dir, idx, split):
     above.
     """
     # slam = slam_t(resolution=0.05, Q=np.diag([2e-4,2e-4,1e-4]))
-    slam = slam_t(resolution=0.05, Q=np.diag([2e-3,2e-3,1e-4]))
+    slam = slam_t(resolution=0.05, Q=np.diag([2e-3,2e-3,1e-2]))
     slam.read_data(src_dir, idx, split)
     T = len(slam.lidar)
     # T = 9000
@@ -160,87 +160,12 @@ def run_slam(src_dir, log_dir, idx, split):
     most_likely_particles = np.zeros((T-t0, 3)) 
     # run slam
     for t in tqdm.tqdm(range(t0+1,T)):
-        # print("slam.dynamics_step: start")
-        # loop_start_time = time.time()
         slam.dynamics_step(t)
-        # particles_all_timesteps = np.hstack((particles_all_timesteps, slam.p))
-        # weights_all_timesteps = np.hstack((weights_all_timesteps, slam.w))
         particles_all_timesteps[t-t0] = deepcopy(slam.p)
-        # dynamics_time = time.time() - loop_start_time
-        # print("slam.dynamics_step: end")
-        # print("slam.observation_step: start")
-        # observation_start_time = time.time()
         slam.observation_step(t)
-        # if t % 1000 == 0:
-        #     plt.figure()
-        #     plt.imshow(slam.map.cells, cmap='binary', extent=[-20, 20, -20, 20], origin='upper')
-        #     plt.title("map at iteration %d"%t)
-        #     plt.show()
         most_likely_particles[t-t0] = deepcopy(slam.p[:, np.argmax(slam.w)])
         weights_all_timesteps[t-t0] = deepcopy(slam.w)
         slam.resample_particles()
-        # most_likely_particle = slam.p[:, np.argmax(slam.w)]
-        # most_likely_particles.append(slam.p[:, np.argmax(slam.w)])
-
-        # observation_time = time.time() - observation_start_time
-        # loop_time = time.time() - loop_start_time
-        # print("loop_time: ", loop_time)
-        # print("dynamics_time: ", dynamics_time)
-        # print("observation_time: ", observation_time)
-        # print("slam.observation_step: end")
-
-    # most_likely_particles = np.array(most_likely_particles).T
-
-    #
-    # ps = deepcopy(slam.p)   # maintains all particles across all time steps
-    # plt.figure(2); plt.clf();
-    # ax = plt.subplot(111)
-    # for t in tqdm.tqdm(range(t0+1,T)):
-    #     slam.dynamics_step(t)
-    #     ps = np.hstack((ps, slam.p))
-    #
-    #     if draw_fig:
-    #         ax.clear()
-    #         ax.plot(slam.p[0], slam.p[0], '*r')
-    #         plt.title('Particles %03d'%t)
-    #         plt.draw()
-    #         plt.pause(0.01)
-    #
-    # plt.plot(ps[0], ps[1], '*c')
-    
-    # trajectory using odometry (xy and yaw) in the lidar data
-    # d = slam.lidar
-    # xyth = []
-    # for p in d:
-    #     xyth.append([p['xyth'][0], p['xyth'][1],p['xyth'][2]])
-    # xyth = np.array(xyth)
-    #
-    # plt.figure()
-    # # plt.title('Trajectory using onboard odometry')
-    # plt.plot(xyth[:,0], xyth[:,1])
-    # # logging.info('> Saving odometry plot in '+os.path.join(log_dir, 'fullrun_odometry_%s_%02d.jpg'%(split, idx)))
-    # # plt.savefig(os.path.join(log_dir, 'fullrun_odometry_%s_%02d.jpg'%(split, idx)))
-    #
-    #
-    # plt.plot(slam.p[0], slam.p[1], '*c')
-    # # plot map
-    # plt.imshow(slam.map.cells, cmap='gray')
-    # plt.title('Trajectory using PF')
-    # logging.info('> Saving plot in '+os.path.join(log_dir, 'fullrun_pf_%s_%02d.jpg'%(split, idx)))
-    # plt.savefig(os.path.join(log_dir, 'fullrun_pf_%s_%02d.jpg'%(split, idx)))
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
     d = slam.lidar
@@ -249,75 +174,32 @@ def run_slam(src_dir, log_dir, idx, split):
         xyth.append([p['xyth'][0], p['xyth'][1], p['xyth'][2]])
     xyth = np.array(xyth)
 
-    # plt.figure(figsize=(10, 10))
-    # plt.plot(xyth[:, 0], xyth[:, 1], label='Odometry Trajectory', color='blue', linewidth=2)
-    # print("particles_all_timesteps.shape", particles_all_timesteps.shape)
-    # print("weights_all_timesteps.shape", weights_all_timesteps.shape)
-    # most_likely_particles = particles_all_timesteps[:, :, np.argmax(weights_all_timesteps[-1])].T
-    # print("most_likely_particles.shape", most_likely_particles.shape)
-    # plt.plot(particles_all_timesteps[:, 0, :], particles_all_timesteps[:, 1, :], 'r', alpha=0.1, label='Particles')
-
-
-
-
 
 
     plt.figure(figsize=(10, 10))
-# Assume slam.map.cells contains the occupancy grid to be plotted
+    # Assume slam.map.cells contains the occupancy grid to be plotted
     extent = [-20, 20, -20, 20] # Adjust as per your map's dimensions and resolution
     plt.imshow(slam.map.cells, cmap='binary', extent=extent, origin='upper')
     plt.colorbar(label='Occupancy')
-    # plt.plot(xyth[:(T-t0), 0], xyth[:(T-t0), 1], label='Odometry Trajectory', color='blue', linewidth=2)
     plt.plot(xyth[:(T-t0), 1], -xyth[:(T-t0), 0], label='Odometry Trajectory', color='blue', linewidth=2)
 
-# Plot all particles with reduced opacity and no label to exclude from legend
     plt.plot(particles_all_timesteps[:, 1, :], -particles_all_timesteps[:, 0, :], 'y', alpha=0.1)
 
-# Now plot the most likely particle trajectory with a label for the legend
-    # most_likely_particles = particles_all_timesteps[:, :, np.argmax(weights_all_timesteps[-1])].T
     plt.plot(most_likely_particles[:, 1], -most_likely_particles[:, 0], 'r.', label='Most Likely Particle Trajectory')
-    # plt.plot(most_likely_particles[:, 0], most_likely_particles[:, 1], 'c-', label='Most Likely Particle Trajectory')
 
-
-
-
-
-
-
-
-
-
-# Adjust the extent if necessary to align the map with your trajectories
-    # extent = [slam.map.xmin, slam.map.xmax, slam.map.ymin, slam.map.ymin]
-    # plt.imshow(slam.map.cells, cmap='gray', extent=extent, origin='lower')
-    # # plt.imshow(slam.map.cells, cmap='gray', origin='lower')
-    # plt.colorbar(label='Occupancy')
 
     plt.title('Trajectory using PF')
     plt.xlabel('X')
     plt.ylabel('Y')
     plt.legend()
 
-# Save the plot
+    # Save the plot
     plot_path = os.path.join(log_dir, f'fullrun_pf_{split}_{idx:02d}.jpg')
     plt.savefig(plot_path)
     print(f'> Saving plot in {plot_path}')
 
     plt.show()
 
-
-    # # save the map
-    # logging.info('> saving map in '+os.path.join(log_dir, 'map-%s-%02d.pkl'%(split, idx)))
-    #
-    # with open(os.path.join(log_dir, 'map-%s-%02d.pkl'%(split, idx)), 'wb') as f:
-    #     pickle.dump(slam.map, f)
-    #
-    # # save the particles
-    # logging.info('> saving particles in '+os.path.join(log_dir, 'particles-%s-%02d.pkl'%(split, idx)))
-    #
-    # with open(os.path.join(log_dir, 'particles-%s-%02d.pkl'%(split, idx)), 'wb') as f:
-    #     pickle.dump(slam.p, f)
-    #
     return slam
 
 
