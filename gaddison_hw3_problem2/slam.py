@@ -14,6 +14,8 @@ import logging
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOGLEVEL", "INFO"))
 
+import time
+
 class map_t:
     """
     This will maintain the occupancy grid and log_odds. You do not need to change anything
@@ -49,7 +51,21 @@ class map_t:
         np.clip to handle these situations.
         """
         #### TODO: XXXXXXXXXXX
-        raise NotImplementedError
+        
+        # clip to within map bounds
+        x = np.clip(x, s.xmin, s.xmax)
+        y = np.clip(y, s.ymin, s.ymax)
+
+        # convert to cell indices
+        x = np.floor((x - s.xmin) / s.resolution).astype(int) # maybe round instead of floor
+        y = np.floor((y - s.ymin) / s.resolution).astype(int)
+
+        return np.array([x, y])
+        # rows = np.clip((x - s.xmin)// s.resolution, 0, s.szx-1)
+        # cols = np.clip((y - s.ymin) // s.resolution, 0, s.szy-1)
+        # 
+        # return np.vstack((rows,cols))
+
 
 class slam_t:
     """
@@ -63,7 +79,7 @@ class slam_t:
         s.init_sensor_model()
 
         # dynamics noise for the state (x,y,yaw)
-        s.Q = 1e-8*np.eye(3)
+        s.Q = Q
 
         # we resample particles if the effective number of particles
         # falls below s.resampling_threshold*num_particles
@@ -124,7 +140,27 @@ class slam_t:
         locations (number of particles n remains the same) and their weights
         """
         #### TODO: XXXXXXXXXXX
-        raise NotImplementedError
+
+        # Algorithm from lecture slides:
+
+        # Step 1:
+        n = len(w)
+        r = np.random.uniform(0, 1/n)
+        i = 0
+        c = w[0]
+        new_particles = np.zeros((3, n))
+       
+        # Step 2:
+        for m in range(n):
+            u = r + m/n
+            while u > c:
+                i = i + 1
+                c =  c + w[i]
+            new_particles[:,m] = p[:,i]
+       
+        new_weights = np.ones(n) / n
+        return new_particles, new_weights 
+
 
     @staticmethod
     def log_sum_exp(w):
@@ -140,16 +176,29 @@ class slam_t:
         in world coordinates
         """
         #### TODO: XXXXXXXXXXX
-        raise NotImplementedError
 
         # make sure each distance >= dmin and <= dmax, otherwise something is wrong in reading
         # the data
+        d = d[np.where((d >= s.lidar_dmin) & (d <= s.lidar_dmax))]
+        angles = angles[np.where((d >= s.lidar_dmin) & (d <= s.lidar_dmax))]
 
         # 1. from lidar distances to points in the LiDAR frame
+        P_lidar = np.vstack((d * np.cos(angles), \
+                             d * np.sin(angles), \
+                             np.zeros(len(d)), \
+                             np.ones(len(d))))
 
         # 2. from LiDAR frame to the body frame
+        body_T_lidar = euler_to_se3(0, head_angle, neck_angle, np.array([0, 0, s.lidar_height])) # order of frames might be wrong naming-wise
+        P_body = body_T_lidar @ P_lidar
 
         # 3. from body frame to world frame
+        x, y, yaw = p
+        world_T_body = euler_to_se3(0, 0, yaw, np.array([x, y, s.head_height]))
+        P_world = world_T_body @ P_body
+
+        return P_world
+
 
     def get_control(s, t):
         """
@@ -163,14 +212,31 @@ class slam_t:
             return np.zeros(3)
 
         #### TODO: XXXXXXXXXXX
-        raise NotImplementedError
+
+        # TODO: check that i am using the correct data
+        control = smart_minus_2d(s.lidar[t]['xyth'], s.lidar[t-1]['xyth'])
+
+        return control
+
 
     def dynamics_step(s, t):
         """"
         Compute the control using get_control and perform that control on each particle to get the updated locations of the particles in the particle filter, remember to add noise using the smart_plus_2d function to each particle
         """
         #### TODO: XXXXXXXXXXX
-        raise NotImplementedError
+
+        # Overview: dynamics is just the control, plus noise
+      
+        # for each particle
+        control = s.get_control(t)
+        for i in range(s.n):
+
+            # create noise (normal, mean 0, var Q, for xyz for each particle)
+            mean = np.zeros(3)
+            noise = np.random.multivariate_normal(mean, s.Q)
+
+            s.p[:, i] = smart_plus_2d(s.p[:, i], control)
+            s.p[:, i] = smart_plus_2d(s.p[:, i], noise)
 
     @staticmethod
     def update_weights(w, obs_logp):
@@ -179,7 +245,17 @@ class slam_t:
         new weights as discussed in the writeup. Make sure that the new weights are normalized
         """
         #### TODO: XXXXXXXXXXX
-        raise NotImplementedError
+        # print("obs_logp: ", obs_logp)
+        # w = np.exp(obs_logp) * w
+        #
+        # # normalize weights
+        # w = w / np.sum(w)
+        #
+        # return w
+
+        # Even better: equation from ED:
+        return np.exp(np.log(w) + obs_logp - slam_t.log_sum_exp(np.log(w) + obs_logp))
+
 
     def observation_step(s, t):
         """
@@ -198,8 +274,50 @@ class slam_t:
         You should ensure that map.cells is recalculated at each iteration (it is simply the binarized version of log_odds). map.log_odds is of course maintained across iterations.
         """
         #### TODO: XXXXXXXXXXX
-        raise NotImplementedError
 
+        # 1. a. Find head, neck angle at t
+        t_idx = s.find_joint_t_idx_from_lidar(s.lidar[t]['t'])
+        neck = s.joint['head_angles'][0][t_idx]
+        head = s.joint['head_angles'][1][t_idx]
+
+        # 1. b. Project lidar scan into world frame
+        scan = s.lidar[t]['scan'] # I assume this is the depths of the lidar scans
+        obs_cells = np.zeros((s.n, s.map.szx, s.map.szy))
+        obs_logodds = np.zeros(s.n)
+
+        # for each particle
+        occ_grid_per_particle = np.zeros((s.n, s.map.szx, s.map.szy))
+        pose = s.p.T
+        for i in range(s.n):
+
+            ## For one particle
+
+            # convert lidar points to world frame
+            lidar_hits_W = s.rays2world(pose[i].T, scan, head, neck, s.lidar_angles)
+            lidar_hits_cellIdx = s.map.grid_cell_from_xy(lidar_hits_W[0], lidar_hits_W[1]).astype(int)
+
+            occ_grid_per_particle[i, lidar_hits_cellIdx[0], lidar_hits_cellIdx[1]] = 1
+
+            # 1. c. Calculate which cells are obstacles according to this particle
+            # Every time we hit a cell already in the map, increase log odds of this particle
+            obs_logodds[i] = s.map.cells[lidar_hits_cellIdx[0], lidar_hits_cellIdx[1]].sum() 
+
+
+        # 2. Update particle weights using observation log_probability
+        s.w = s.update_weights(s.w, obs_logodds)
+
+        # 3. Find particle with largest weight, use its occupied cells to update map.log_odds
+        most_likely_occ_grid = occ_grid_per_particle[np.argmax(s.w)]
+
+        s.map.log_odds += s.lidar_log_odds_occ * most_likely_occ_grid
+        s.map.log_odds = np.clip(s.map.log_odds, -s.map.log_odds_max, s.map.log_odds_max)
+
+        # update binary map based upon log odds map
+        s.map.cells = np.zeros(s.map.cells.shape)
+        s.map.cells[s.map.log_odds >= s.map.log_odds_thresh] = 1
+    
+
+                    
     def resample_particles(s):
         """
         Resampling is a (necessary) but problematic step which introduces a lot of variance

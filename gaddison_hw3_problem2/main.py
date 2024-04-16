@@ -1,6 +1,8 @@
 # Pratik Chaudhari (pratikac@seas.upenn.edu)
 
 import click, tqdm, random
+# import pickle5 as pickle
+import time
 
 from slam import *
 
@@ -70,6 +72,7 @@ def run_observation_step(src_dir, log_dir, idx, split, is_online=False):
     After running this function, you should get that the weight of the second particle is the largest since it is the closest to the origin [0, 0, 0]
     """
     slam = slam_t(resolution=0.05)
+    print("slam.map.cells", slam.map.cells)
     slam.read_data(src_dir, idx, split)
 
     # t=0 sets up the map using the yaw of the lidar, do not use yaw for
@@ -81,8 +84,10 @@ def run_observation_step(src_dir, log_dir, idx, split, is_online=False):
     xyth[2] = slam.lidar[t0]['rpy'][2]
     logging.debug('> Initializing 1 particle at: {}'.format(xyth))
     slam.init_particles(n=1,p=xyth.reshape((3,1)),w=np.array([1]))
+    print("slam.map.cells", slam.map.cells)
 
     slam.observation_step(t=0)
+    print("post_obs1: slam.map.cells", slam.map.cells)
     logging.info('> Particles\n: {}'.format(slam.p))
     logging.info('> Weights: {}'.format(slam.w))
 
@@ -90,6 +95,7 @@ def run_observation_step(src_dir, log_dir, idx, split, is_online=False):
     logging.info('\n')
     n = 3
     w = np.ones(n)/float(n)
+    logging.info('> Weights: {}'.format(w))
     p = np.array([[2, 0.2, 3],[2, 0.4, 5],[2.7, 0.1, 4]])
     slam.init_particles(n, p, w)
 
@@ -105,23 +111,98 @@ def run_slam(src_dir, log_dir, idx, split):
     be something larger than the very small value we picked in run_dynamics_step function
     above.
     """
-    slam = slam_t(resolution=0.05, Q=np.diag([2e-4,2e-4,1e-4]))
+    # slam = slam_t(resolution=0.05, Q=np.diag([2e-4,2e-4,1e-4]))
+    slam = slam_t(resolution=0.05, Q=np.diag([2e-3,2e-3,1e-2]))
     slam.read_data(src_dir, idx, split)
     T = len(slam.lidar)
+    # T = 9000
 
-    raise NotImplementedError
     # again initialize the map to enable calculation of the observation logp in
     # future steps, this time we want to be more careful and initialize with the
     # correct lidar scan. First find the time t0 around which we have both LiDAR
     # data and joint data
     #### TODO: XXXXXXXXXXX
 
+    # Iterate until both lidar and joint data are available
+    t0 = 0
+    while True:
+        idx = slam.find_joint_t_idx_from_lidar(slam.lidar[t0]['t'])
+        if slam.lidar[t0]['t'] == slam.joint['t'][idx]:
+            break
+        t0 += 1
+    print("starting at t0 = ", t0)
+
     # initialize the occupancy grid using one particle and calling the observation_step
     # function
     #### TODO: XXXXXXXXXXX
+   
+    xyth = slam.lidar[t0]['xyth']
+    xyth[2] = slam.lidar[t0]['rpy'][2]
+    logging.debug('> Initializing 1 particle at: {}'.format(xyth))
+
+    slam.init_particles(n=1, p=xyth.reshape((3,1)), w=np.array([1]))
+    slam.observation_step(t=t0)
 
     # slam, save data to be plotted later
     #### TODO: XXXXXXXXXXX
+
+    # intialize the particles
+    n = 100
+    w = np.ones(n)/float(n)
+    p = np.zeros((3,n), dtype=np.float64)
+    slam.init_particles(n, p, w)
+
+    # particles_all_timesteps = deepcopy(slam.p)   # maintains all particles across all time steps
+    # weights_all_timesteps = deepcopy(slam.w)
+    particles_all_timesteps = np.zeros((T-t0, 3, n))
+    weights_all_timesteps = np.zeros((T-t0, n))
+
+    most_likely_particles = np.zeros((T-t0, 3)) 
+    # run slam
+    for t in tqdm.tqdm(range(t0+1,T)):
+        slam.dynamics_step(t)
+        particles_all_timesteps[t-t0] = deepcopy(slam.p)
+        slam.observation_step(t)
+        most_likely_particles[t-t0] = deepcopy(slam.p[:, np.argmax(slam.w)])
+        weights_all_timesteps[t-t0] = deepcopy(slam.w)
+        slam.resample_particles()
+
+
+    d = slam.lidar
+    xyth = []
+    for p in d:
+        xyth.append([p['xyth'][0], p['xyth'][1], p['xyth'][2]])
+    xyth = np.array(xyth)
+
+
+
+    plt.figure(figsize=(10, 10))
+    # Assume slam.map.cells contains the occupancy grid to be plotted
+    extent = [-20, 20, -20, 20] # Adjust as per your map's dimensions and resolution
+    plt.imshow(slam.map.cells, cmap='binary', extent=extent, origin='upper')
+    plt.colorbar(label='Occupancy')
+    plt.plot(xyth[:(T-t0), 1], -xyth[:(T-t0), 0], label='Odometry Trajectory', color='blue', linewidth=2)
+
+    plt.plot(particles_all_timesteps[:, 1, :], -particles_all_timesteps[:, 0, :], 'y', alpha=0.1)
+
+    plt.plot(most_likely_particles[:, 1], -most_likely_particles[:, 0], 'r.', label='Most Likely Particle Trajectory')
+
+
+    plt.title('Trajectory using PF')
+    plt.xlabel('X')
+    plt.ylabel('Y')
+    plt.legend()
+
+    # Save the plot
+    plot_path = os.path.join(log_dir, f'fullrun_pf_{split}_{idx:02d}.jpg')
+    plt.savefig(plot_path)
+    print(f'> Saving plot in {plot_path}')
+
+    plt.show()
+
+    return slam
+
+
 
 @click.command()
 @click.option('--src_dir', default='./', help='data directory', type=str)
