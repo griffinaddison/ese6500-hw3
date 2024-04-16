@@ -67,7 +67,7 @@ def load_colmap_data():
 
     H = new_height
     W = new_width
-    focal_length = (data['fl_x'] + data['fl_y'] / 2) * (new_width / original_width)
+    focal_length = ((data['fl_x'] + data['fl_y']) / 2) * (new_width / original_width)
 
     # Create dictionary of cam params so i can call each by name
     # cam_params = {'H': H, 'W': W, 'focal_length': focal_length} 
@@ -88,26 +88,93 @@ def get_rays(H, W, focal_length, pose):
         passing through the pixel at row index `i` and column index `j`.
     """
     ################### YOUR CODE START ###################
-       # Create meshgrid for pixel coordinates (H, W)
-    i, j = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
-    pixels = torch.stack([j, i, torch.ones_like(i)], dim=-1)  # Shape: (H, W, 3)
+    # finally, here is the correct code:
+    i, j = torch.meshgrid(torch.arange(0, W, dtype=torch.float32),
+                          torch.arange(0, H, dtype=torch.float32), indexing='xy')
     
-    # Calculate K inverse once since it's constant
-    K_inv = torch.linalg.inv(torch.tensor([[focal_length, 0, W / 2],
-                                           [0, focal_length, H / 2],
-                                           [0, 0, 1]], dtype=torch.float32))
+    # Calculate directions using the provided formula
+    F = focal_length
+    directions = torch.stack([(i - W * 0.5) / F,
+                              -(j - H * 0.5) / F,
+                              -torch.ones_like(i)], dim=-1)
     
-    # Transform pixel coordinates to world coordinates
-    pixels_world = torch.einsum('ij,hwj->hwi', K_inv, pixels.float())
-    
-    # Calculate ray directions
-    ray_directions = torch.einsum('ij,hwj->hwi', pose[:3, :3], pixels_world)
-    ray_directions = ray_directions / torch.norm(ray_directions, dim=-1, keepdim=True)
-    
-    # Calculate ray origins
-    ray_origins = pose[:3, 3].expand(H, W, 3)  # The origin is the same for all rays
-    
+    # Transform directions from camera space to world space
+    directions = directions.reshape(-1, 3)  # Flatten to (H*W, 3) for matmul
+    directions_homogeneous = torch.cat([directions, torch.ones((H*W, 1))], dim=-1)  # To homogeneous
+    # directions_world = (Tcw[:3, :3] @ directions.T).T  # Apply rotation
+    # Tcw_tensor = torch.from_numpy(Tcw).to(device=device, dtype=torch.float32)
+    if not isinstance(pose, torch.Tensor):
+        Tcw_tensor = torch.from_numpy(pose).to(dtype=torch.float32)
+    else:
+        Tcw_tensor = pose.to(dtype=torch.float32)
+    directions_world = (Tcw_tensor[:3, :3] @ directions.T).T  # Apply rotation
+
+    # Calculate ray origins (camera position in world space for all rays)
+    ray_origins = Tcw_tensor[:3, -1].expand(H*W, 3)  # Camera position (same for all rays)
+
+    # Reshape to (H, W, 3) for both origins and directions
+    ray_origins = ray_origins.reshape(H, W, 3)
+    ray_directions = directions_world.reshape(H, W, 3)
+
     return ray_origins, ray_directions
+
+
+
+
+
+    #   # Create meshgrid for pixel coordinates (H, W)
+    # i, j = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
+    # pixels = torch.stack([j, i, torch.ones_like(i)], dim=-1)  # Shape: (H, W, 3)
+    
+    # # Calculate K inverse once since it's constant
+    # K_inv = torch.linalg.inv(torch.tensor([[focal_length, 0, W / 2],
+    #                                        [0, focal_length, H / 2],
+    #                                        [0, 0, 1]], dtype=torch.float32))
+    
+    # # Transform pixel coordinates to world coordinates
+    # pixels_world = torch.einsum('ij,hwj->hwi', K_inv, pixels.float())
+    
+    # # Calculate ray directions
+    # ray_directions = torch.einsum('ij,hwj->hwi', pose[:3, :3], pixels_world)
+    # ray_directions = ray_directions / torch.norm(ray_directions, dim=-1, keepdim=True)
+    
+    # # Calculate ray origins
+    # ray_origins = pose[:3, 3].expand(H, W, 3)  # The origin is the same for all rays
+    
+    # return ray_origins, ray_directions
+
+    # i, j = torch.meshgrid(torch.arange(0, W, dtype=torch.float32),
+    #                       torch.arange(0, H, dtype=torch.float32), indexing='xy')
+
+    # # Calculate directions using the provided formula
+    # F = focal_length
+    # directions = torch.stack([(i - W * 0.5) / F,
+    #                           -(j - H * 0.5) / F,
+    #                           -torch.ones_like(i)], dim=-1)
+
+    # # Transform directions from camera space to world space
+    # directions = directions.reshape(-1, 3)  # Flatten to (H*W, 3) for matmul
+    # directions_homogeneous = torch.cat([directions, torch.ones((H*W, 1))], dim=-1)  # To homogeneous
+    # # directions_world = (Tcw[:3, :3] @ directions.T).T  # Apply rotation
+    # # Tcw_tensor = torch.from_numpy(Tcw).to(device=device, dtype=torch.float32)
+    # if not isinstance(pose, torch.Tensor):
+    #     Tcw_tensor = torch.from_numpy(pose).to(dtype=torch.float32)
+    # else:
+    #     Tcw_tensor = pose.to(dtype=torch.float32)
+    # directions_world = (Tcw_tensor[:3, :3] @ directions.T).T  # Apply rotation
+
+    # # Calculate ray origins (camera position in world space for all rays)
+    # ray_origins = Tcw_tensor[:3, -1].expand(H*W, 3)  # Camera position (same for all rays)
+
+    # # Reshape to (H, W, 3) for both origins and directions
+    # ray_origins = ray_origins.reshape(H, W, 3)
+    # ray_directions = directions_world.reshape(H, W, 3)
+
+    # return ray_origins, ray_directions
+
+
+
+
     # ray_origins = torch.zeros((H, W, 3))
     # ray_directions = torch.zeros((H, W, 3))
     #
@@ -138,57 +205,38 @@ def sample_points_from_rays(ray_origins, ray_directions, snear, sfar, Nsample):
       depth_values: sampled depth values along each ray, shape (H, W, num_samples)
     """
     ################### YOUR CODE START ###################
-   #  H, W, _ = ray_origins.shape
-   #  sampled_points = torch.zeros((H, W, Nsample, 3))
-   #  depth_values = torch.zeros((H, W, Nsample))
-   # 
-   #  # Calculate segment length for jittering
-   #  segment_lengths = (sfar - snear) / Nsample
-   #
-   #  # for i in range(H):
-   #  #     for j in range(W):
-   #  #         # Sample depth values deterministically
-   #  #         depth_values_k = torch.linspace(snear, sfar, Nsample)
-   #  #         # Add uniform noise to jitter the samples for this ray
-   #  #         # sample_jitters = np.random.uniform(-segment_lengths / 2, segment_lengths / 2, Nsample)
-   #  #         # Torch equivalent:
-   #  #         # sample_jitters = (torch.rand(Nsample) - 0.5) * segment_lengths
-   #  #         # depth_values += sample_jitters
-   #  #
-   #  #         for k in range(Nsample):
-   #  #             # Calculate the point at depth k along the ray (i, j)
-   #  #             sampled_points[i, j, k] = ray_origins[i, j] + ray_directions[i, j] * depth_values_k[k]
-   #  #             depth_values[i, j, k] = depth_values_k[k]
-   #  # # print("sampled_point.shape: ", sampled_points.shape)
-   #  #
-   #
-   #  ray_origins = ray_origins[..., None, :]
-   #  ray_directions = ray_directions[..., None, :]
-   #  for k in range(Nsample):
-   #      depth_values[..., k] = snear + (sfar - snear) * (k + 0.5) / Nsample
-   #      print("ray_origins.shape: ", ray_origins.shape, "ray_directions.shape: ", ray_directions.shape)
-   #      print("depth_values[..., k].unsqueeze(-1).shape: ", depth_values[..., k].unsqueeze(-1).shape)
-   #      print("ray_directions * depth_values[..., k].unsqueeze(-1).shape",(ray_directions * depth_values[..., k].unsqueeze(-1)).shape)
-   #      sampled_points[..., k, :] = ray_origins + ray_directions * depth_values[..., k].unsqueeze(-1)
-   #
     H, W, _ = ray_origins.shape
-    # Shape: (H, W, Nsample)
-    depth_values = torch.linspace(snear, sfar, Nsample).view(1, 1, Nsample).expand(H, W, Nsample)
 
-    # Optional: Add jitter to depth values to sample points in between segments
-    # segment_lengths = (sfar - snear) / Nsample
-    # sample_jitters = (torch.rand(H, W, Nsample) - 0.5) * segment_lengths
-    # depth_values += sample_jitters
+    depth_values_one_ray = torch.linspace(snear, sfar, Nsample)
+    # add two dimensions before the depth values, then expand these to H, W
+    depth_values = torch.tile(depth_values_one_ray, (H, W, 1))
 
-    # Calculate the 3D points
-    # Expand ray_origins and ray_directions to match depth_values shape for broadcasting
-    # Shape: (H, W, Nsample, 3)
-    ray_origins_exp = ray_origins.unsqueeze(2).expand(-1, -1, Nsample, -1)
-    ray_directions_exp = ray_directions.unsqueeze(2).expand(-1, -1, Nsample, -1)
-    # Calculate the sampled points
-    sampled_points = ray_origins_exp + ray_directions_exp * depth_values.unsqueeze(-1)
+    # ray_origins is shape (H, W, 3), ray_directions is shape (H, W, 3)
+    ray_origins = ray_origins.unsqueeze(2)  # Shape (H, W, 1, 3)
+    ray_directions = ray_directions.unsqueeze(2)  # Shape (H, W, 1, 3)
+    depth_values = depth_values.unsqueeze(-1)
+    # depths_tensor = torch.from_numpy(depths)
+    # depths_tensor = depths_tensor.to(device)
 
-    return sampled_points, depth_values    ################### YOUR CODE END ###################
+    sampled_points = ray_origins + ray_directions * depth_values
+
+    return sampled_points, depth_values[..., 0]
+
+
+    # # Optional: Add jitter to depth values to sample points in between segments
+    # # segment_lengths = (sfar - snear) / Nsample
+    # # sample_jitters = (torch.rand(H, W, Nsample) - 0.5) * segment_lengths
+    # # depth_values += sample_jitters
+
+    # # Calculate the 3D points
+    # # Expand ray_origins and ray_directions to match depth_values shape for broadcasting
+    # # Shape: (H, W, Nsample, 3)
+    # ray_origins_exp = ray_origins.unsqueeze(2).expand(-1, -1, Nsample, -1)
+    # ray_directions_exp = ray_directions.unsqueeze(2).expand(-1, -1, Nsample, -1)
+    # # Calculate the sampled points
+    # sampled_points = ray_origins_exp + ray_directions_exp * depth_values.unsqueeze(-1)
+
+    # return sampled_points, depth_values    ################### YOUR CODE END ###################
 
 
 def positional_encoding(pos_in, max_freq_power=10, include_input=True):
@@ -202,24 +250,36 @@ def positional_encoding(pos_in, max_freq_power=10, include_input=True):
                (H*W*num_samples, (include_input + 2*freq) * 3)
     """
     ################### YOUR CODE START ###################
-    frequencies = 2 ** torch.arange(max_freq_power + 1).to(pos_in.device, pos_in.dtype)
-    sin_encodings = []
-    cos_encodings = []
+    # frequencies = 2 ** torch.arange(max_freq_power).to(pos_in.device, pos_in.dtype)
+    # sin_encodings = []
+    # cos_encodings = []
 
-    for dim in range(3):
-        dim_freqs = pos_in[:, dim:dim+1] * frequencies * torch.pi
-        sin_encodings.append(torch.sin(dim_freqs))
-        cos_encodings.append(torch.cos(dim_freqs))
+    # for dim in range(3):
+    #     dim_freqs = pos_in[:, dim:dim+1] * frequencies * torch.pi
+    #     sin_encodings.append(torch.sin(dim_freqs))
+    #     cos_encodings.append(torch.cos(dim_freqs))
 
-    sin_encodings = torch.cat(sin_encodings, dim=-1)
-    cos_encodings = torch.cat(cos_encodings, dim=-1)
-    encoded = torch.cat([sin_encodings, cos_encodings], dim=-1)
+    # sin_encodings = torch.cat(sin_encodings, dim=-1)
+    # cos_encodings = torch.cat(cos_encodings, dim=-1)
+    # encoded = torch.cat([sin_encodings, cos_encodings], dim=-1)
+
+    # if include_input:
+    #     encoded = torch.cat([pos_in, encoded], dim=-1)
+
+    # return encoded
+    
+    freqs = 2 ** torch.arange(max_freq_power).float()  # Ensure the tensor is on the correct device
+    sin_encodings = torch.sin((pos_in[..., None] * freqs[None, :]).reshape(-1, max_freq_power * 3))
+    cos_encodings = torch.cos((pos_in[..., None] * freqs[None, :]).reshape(-1, max_freq_power * 3))
+    encodings = torch.cat([sin_encodings, cos_encodings], dim=-1)
 
     if include_input:
-        encoded = torch.cat([pos_in, encoded], dim=-1)
+        pos_out = torch.cat([pos_in.reshape(-1, 3), encodings], dim=-1)
+    else:
+        pos_out = encodings
 
-    return encoded
-    # frequencies = 2 ** torch.arange(max_freq_power + 1)
+    return pos_out
+    # # frequencies = 2 ** torch.arange(max_freq_power + 1)
     # sin_encodings = []
     # cos_encodings = []
     #
@@ -314,20 +374,24 @@ def volume_rendering(
     # print("deltas.shape", deltas.shape, "deltas[..., -1].unsqueeze(2).shape", deltas[..., -1].unsqueeze(2).shape)
     deltas = torch.cat([deltas, deltas[..., -1].unsqueeze(2)], dim=-1)
 
-    densities = radiance_field[..., 3]
-    colors = radiance_field[..., 0:3]
+    # densities = radiance_field[..., 3]
+    # colors = radiance_field[..., 0:3]
+    densities = F.relu(radiance_field[..., 3])
+    colors = torch.sigmoid(radiance_field[..., 0:3])
 
-    opacities = 1 - torch.exp(-densities * deltas)
+    opacities = 1.0 - torch.exp(-densities * deltas)
 
     # Compute transmittance using the cumulative product of (1-opacity)
-    transmittance = torch.cat([torch.ones_like(opacities[:, :, :1]), 1 - opacities], dim=-1)
-    transmittance = torch.cumprod(transmittance, dim=-1)[:, :, :-1]
+    # transmittance = torch.cat([torch.ones_like(opacities[:, :, :1]), 1 - opacities], dim=-1)
+    # transmittance = torch.cumprod(transmittance, dim=-1)[:, :, :-1]
+    transmittance = torch.cat([torch.ones_like(opacities[..., :1]), torch.cumprod(1.0 - opacities + 1e-10, dim=-1)[..., :-1]], dim=-1)
     
     # Weighted sum of colors along each ray
-    weighted_colors = colors * opacities.unsqueeze(-1) * transmittance.unsqueeze(-1)
+    # weighted_colors = colors * opacities * transmittance
+    weights = opacities * transmittance
     
     # Integrate along the ray
-    rgb_map = torch.sum(weighted_colors, dim=-2)
+    rgb_map = torch.sum(weights[..., None] * colors, dim=-2)
 
     # print("rgb_map.shape should be (H, W, 3):", rgb_map.shape)
     # print("rgb_map.type():", rgb_map.type())
@@ -542,25 +606,24 @@ if __name__ == "__main__":
 
     # Initialize model
     print("Initialize model start")
-    model = TinyNeRF(pos_dim=69, fc_dim=32)
+    model = TinyNeRF(pos_dim=63, fc_dim=32)
     #model = model.to(device)
     print("Initialize model end")
     #
-    # Train the model
-    print("Train the model start")
-    print("imgs.type(): ", imgs.type(), "poses.type(): ", poses.type(), "type(cam_params): ", type(cam_params))
-    train(imgs, poses, cam_params, near_point, far_point, num_depth_samples_per_ray, 1000, model)
-    print("Train the model end")
-    #
-    # # Save the model 
-    torch.save(model.state_dict(), '/home/griffin/Documents/ese6500-hw3/gaddison_hw3_problem3/model.pt')
+    # # Train the model
+    # print("Train the model start")
+    # print("imgs.type(): ", imgs.type(), "poses.type(): ", poses.type(), "type(cam_params): ", type(cam_params))
+    # train(imgs, poses, cam_params, near_point, far_point, num_depth_samples_per_ray, 1000, model)
+    # print("Train the model end")
+    # #
+    # # # Save the model 
+    # torch.save(model.state_dict(), '/home/griffin/Documents/ese6500-hw3/gaddison_hw3_problem3/model.pt')
 
     # Load the model
-    # model = TinyNeRF(pos_dim=69, fc_dim=32)
     model.load_state_dict(torch.load('/home/griffin/Documents/ese6500-hw3/gaddison_hw3_problem3/model.pt'))
 
     # Test the model
-    test_idx = 80       
+    test_idx = 23       
     test_img_rgb = imgs[test_idx, ..., :3]
     test_pose = poses[test_idx]
     print("nerf_step_forward start")
